@@ -1,0 +1,11 @@
+.settings
+Core/Startup
+Debug
+Drivers
+Middlewares
+USB_HOST
+.cproject
+.mxproject
+.project
+*.ld
+*.launch
