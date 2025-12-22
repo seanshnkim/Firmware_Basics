@@ -20,6 +20,7 @@
 #include "main.h"
 #include "usb_host.h"
 #include <stdio.h>
+#include <stdbool.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -152,23 +153,127 @@ int main(void)
   MX_USB_HOST_Init();
   /* USER CODE BEGIN 2 */
   printf("Hello from STM32F429!\r\n");
-//  char msg[100];
-  int counter = 0;
+  printf("\r\n=== Flash Erase and Write Test ===\r\n\r\n");
+
+  // First, read before erase
+  uint32_t test_address = 0x080E0000;
+  printf("BEFORE erase - Reading from 0x080E0000:\r\n");
+  for (int i = 0; i < 4; i++)
+  {
+      uint32_t value = *((uint32_t *)(test_address + i * 4));
+      printf("  0x%08lX: 0x%08lX\r\n", test_address + i * 4, value);
+  }
+
+  // Now erase Sector 11
+  printf("\r\nErasing Sector 11...\r\n");
+
+  // 1. Unlock flash
+  HAL_FLASH_Unlock();
+
+  // 2. Setup erase
+  FLASH_EraseInitTypeDef EraseInitStruct;
+  EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
+  EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;  // 2.7V to 3.6V
+  EraseInitStruct.Sector = FLASH_SECTOR_11;
+  EraseInitStruct.NbSectors = 1;
+
+  uint32_t SectorError = 0;
+
+  // 3. Perform erase
+  if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) == HAL_OK)
+  {
+      printf("  Erase OK\r\n");
+  }
+
+  // 4. Write test data
+  printf("\r\nStep 2: Writing test pattern...\r\n");
+
+  uint32_t test_data[] = {
+      0xDEADBEEF,
+      0xCAFEBABE,
+      0x12345678,
+      0xAABBCCDD
+  };
+
+  for (int i = 0; i < 4; i++)
+  {
+//      uint32_t write_address = test_address + (i * 4);
+      // What happens if tried to write to the same address twice?
+      uint32_t write_address = test_address;
+
+      // Write 32-bit word
+      HAL_StatusTypeDef status = HAL_FLASH_Program(
+          FLASH_TYPEPROGRAM_WORD,
+          write_address,
+          test_data[i]
+      );
+
+      if (status == HAL_OK)
+      {
+          printf("  Written 0x%08lX to address 0x%08lX\r\n",
+                 test_data[i], write_address);
+      }
+      else
+      {
+          printf("  WRITE FAILED at 0x%08lX!\r\n", write_address);
+      }
+  }
+
+  // 5. Lock flash
+  HAL_FLASH_Lock();
+
+  // 6. Read back and verify
+  printf("\r\nStep 3: Reading back and verifying...\r\n");
+
+  bool all_correct = true;
+
+  for (int i = 0; i < 4; i++)
+  {
+      uint32_t read_address = test_address + (i * 4);
+      uint32_t read_value = *((uint32_t *)read_address);
+
+      printf("  Address 0x%08lX: Read 0x%08lX, Expected 0x%08lX ",
+             read_address, read_value, test_data[i]);
+
+      if (read_value == test_data[i])
+      {
+          printf("[OK]\r\n");
+      }
+      else
+      {
+          printf("[MISMATCH!]\r\n");
+          all_correct = false;
+      }
+  }
+
+  if (all_correct)
+  {
+      printf("\r\n✓ All writes verified successfully!\r\n");
+  }
+  else
+  {
+      printf("\r\n✗ Verification failed!\r\n");
+  }
+
+  printf("\r\n=== Flash Write Test Complete ===\r\n");
+
+  /* USER CODE END 2 */
+
 //  sprintf(msg, "Counter: %d\r\n", counter);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+//  while (1)
+//  {
     /* USER CODE END WHILE */
-    MX_USB_HOST_Process();
-
-    printf("Counter: %d\r\n", counter++);
-    HAL_Delay(1000);
+//    MX_USB_HOST_Process();
+//
+//    printf("Counter: %d\r\n", counter++);
+//    HAL_Delay(1000);
 
     /* USER CODE BEGIN 3 */
-  }
+//  }
   /* USER CODE END 3 */
 }
 
