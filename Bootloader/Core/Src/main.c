@@ -126,17 +126,16 @@ void jump_to_application(uint32_t app_address)
 	__HAL_RCC_GPIOD_CLK_DISABLE();
 	__HAL_RCC_GPIOE_CLK_DISABLE();
 	__HAL_RCC_GPIOF_CLK_DISABLE();
-	__HAL_RCC_GPIOG_CLK_DISABLE();
+    __HAL_RCC_GPIOG_CLK_DISABLE();
 	__HAL_RCC_GPIOH_CLK_DISABLE();
 	__HAL_RCC_USART1_CLK_DISABLE();
 	__HAL_RCC_USB_OTG_FS_CLK_DISABLE();
+	__HAL_RCC_USB_OTG_HS_CLK_DISABLE();  // Add this!
+
+
 	__HAL_RCC_DMA2D_CLK_DISABLE();
 	__HAL_RCC_LTDC_CLK_DISABLE();
 	__HAL_RCC_FMC_CLK_DISABLE();
-
-	TIM6->CR1 = 0;  // Disable counter
-	TIM6->DIER = 0; // Disable interrupts
-	__HAL_RCC_TIM6_CLK_DISABLE();
 
 	// 5. Deinitialize HAL
 	HAL_DeInit();
@@ -245,7 +244,7 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-    MX_USB_HOST_Process();
+    // MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
 

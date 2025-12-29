@@ -44,3 +44,6 @@ The TIM6 register values
 
 It's not there. This means the code hangs somewhere between the UART init and those printf statements.
 The application is hanging in MX_USB_HOST_Init().
+
+## Dec 29
+Added `__enable_irq()` into application code.

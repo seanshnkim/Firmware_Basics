@@ -136,14 +136,24 @@ int main(void)
 
   /* USER CODE BEGIN 2 */
   // Force immediate GPIO without any HAL
-  RCC->AHB1ENR |= RCC_AHB1ENR_GPIOGEN;
-  GPIOG->MODER |= (1 << 28);  // Set PG13 as output
-  GPIOG->ODR |= (1 << 14);    // Turn on LED
+//  RCC->AHB1ENR |= RCC_AHB1ENR_GPIOGEN;
+//  GPIOG->MODER |= (1 << 28);  // Set PG13 as output
+//  GPIOG->ODR |= (1 << 14);    // Turn on LED
 
   printf("Application v1.0 started.\n");
   printf("App started! Checking TIM6...\r\n");
   printf("TIM6 CR1: 0x%08lX\r\n", TIM6->CR1);
   printf("TIM6 DIER: 0x%08lX\r\n", TIM6->DIER);
+  printf("Before HAL Delay\n");
+
+  HAL_GPIO_WritePin(GPIOG, GPIO_PIN_13, GPIO_PIN_SET);
+  printf("After HAL HAL_GPIO_WritePin 1\n");
+  __enable_irq();
+  HAL_Delay(300);
+//  for (int i = 0; i < 30000; i++);
+  HAL_GPIO_WritePin(GPIOG, GPIO_PIN_13, GPIO_PIN_RESET);
+  printf("After HAL HAL_GPIO_WritePin 2\n");
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -151,11 +161,15 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-//    MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
-    HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
-    HAL_Delay(500);
+//    HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+//    HAL_Delay(500);
+
+	  HAL_GPIO_WritePin(GPIOG, GPIO_PIN_13, GPIO_PIN_SET);
+	  HAL_Delay(300);
+	  HAL_GPIO_WritePin(GPIOG, GPIO_PIN_13, GPIO_PIN_RESET);
+	  HAL_Delay(300);
   }
   /* USER CODE END 3 */
 }
