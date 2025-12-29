@@ -105,8 +105,14 @@
                                                      This value must be a multiple of 0x200. */
 #endif /* VECT_TAB_SRAM */
 #if !defined(VECT_TAB_OFFSET)
-#define VECT_TAB_OFFSET         0x00000000U     /*!< Vector Table offset field.
-                                                     This value must be a multiple of 0x200. */
+/*
+ * The application needs to tell the Cortex-M where its interrupt vector table is located.
+ * By default, it assumes 0x08000000, but our application is at 0x08010000 (offset by 0x10000 bytes = 64KB).
+ * Without this change, if an interrupt fires while the application is running,
+ * the CPU will look for the handler at the wrong address!
+ * */
+#define VECT_TAB_OFFSET  0x00010000U
+                                                     /* This value must be a multiple of 0x200. */
 #endif /* VECT_TAB_OFFSET */
 #endif /* USER_VECT_TAB_ADDRESS */
 /******************************************************************************/

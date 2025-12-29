@@ -20,7 +20,6 @@
 #include "main.h"
 #include "usb_host.h"
 #include <stdio.h>
-#include <stdbool.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -82,35 +81,93 @@ void MX_USB_HOST_Process(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-// Function to send a character via ITM
-//void ITM_SendChar(uint8_t ch)
-//{
-//	// ITM Port 0 is used for printf
-//	// Wait until ITM port is ready
-//	while (ITM->PORT[0].u32 == 0);
-//
-//	// Send the character
-//	ITM->PORT[0].u8 = ch;
-//}
-
 int _write(int file, char *ptr, int len)
 {
-    HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, HAL_MAX_DELAY);
+    HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, 1000);
     return len;
 }
 
-// Redirect printf to ITM
-//int _write(int file, char *ptr, int len)
-//{
-//	for (int i=0; i < len; i++) {
-//		ITM_SendChar(ptr[i]);
-//	}
-//	return len;
-//}
-//int _write(int file, char *ptr, int len) {
-//	HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, HAL_MAX_DELAY);
-//	return len;
-//}
+/**
+ * @brief  Jump to application at specified address
+ * @param  app_address: Start address of application (e.g., 0x08010000)
+ * @retval None (doesn't return if successful)
+ */
+void jump_to_application(uint32_t app_address)
+{
+    printf("Preparing to jump to application at 0x%08lX...\r\n", app_address);
+
+    // 1. Read the application's vector table
+    //    First entry: Initial Stack Pointer
+    //    Second entry: Reset Handler (entry point)
+    uint32_t app_stack_pointer = *((__IO uint32_t*)app_address);
+    uint32_t app_entry_point = *((__IO uint32_t*)(app_address + 4));
+
+    printf("  App Stack Pointer: 0x%08lX\r\n", app_stack_pointer);
+    printf("  App Entry Point:   0x%08lX\r\n", app_entry_point);
+
+    // 2. Sanity check: Is the stack pointer valid?
+    //    It should point to RAM (0x20000000 - 0x20030000 for STM32F429)
+    if ((app_stack_pointer < 0x20000000) || (app_stack_pointer > 0x20030000))
+    {
+        printf("ERROR: Invalid stack pointer! Application may not be valid.\r\n");
+        return;  // Don't jump to invalid application
+    }
+
+    printf("Jumping to application NOW!\r\n\r\n");
+    HAL_Delay(100);  // Give UART time to send the message
+
+    // 3. Disable interrupts
+    __disable_irq();
+
+    // 4. Disable all peripheral clocks (important!)
+	__HAL_RCC_GPIOA_CLK_DISABLE();
+	__HAL_RCC_GPIOB_CLK_DISABLE();
+	__HAL_RCC_GPIOC_CLK_DISABLE();
+	__HAL_RCC_GPIOD_CLK_DISABLE();
+	__HAL_RCC_GPIOE_CLK_DISABLE();
+	__HAL_RCC_GPIOF_CLK_DISABLE();
+	__HAL_RCC_GPIOG_CLK_DISABLE();
+	__HAL_RCC_GPIOH_CLK_DISABLE();
+	__HAL_RCC_USART1_CLK_DISABLE();
+	__HAL_RCC_USB_OTG_FS_CLK_DISABLE();
+	__HAL_RCC_DMA2D_CLK_DISABLE();
+	__HAL_RCC_LTDC_CLK_DISABLE();
+	__HAL_RCC_FMC_CLK_DISABLE();
+
+	TIM6->CR1 = 0;  // Disable counter
+	TIM6->DIER = 0; // Disable interrupts
+	__HAL_RCC_TIM6_CLK_DISABLE();
+
+	// 5. Deinitialize HAL
+	HAL_DeInit();
+
+    // 6. Disable SysTick
+    SysTick->CTRL = 0;
+    SysTick->LOAD = 0;
+    SysTick->VAL = 0;
+
+    // 7. Clear all interrupt pending flags
+	for (int i = 0; i < 8; i++)
+	{
+		NVIC->ICPR[i] = 0xFFFFFFFF;
+	}
+
+	// 8. Set the vector table address to the application's vector table
+	SCB->VTOR = app_address;
+
+    // 9. Set the stack pointer to the application's initial stack pointer
+    __set_MSP(app_stack_pointer);
+
+    // 10. Set control register
+    __set_CONTROL(0);
+
+    // 11. Jump to the application's reset handler
+    void (*app_reset_handler)(void) = (void (*)(void))app_entry_point;
+    app_reset_handler();
+
+    // Should never reach here
+    while (1);
+}
 /* USER CODE END 0 */
 
 /**
@@ -152,128 +209,52 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USB_HOST_Init();
   /* USER CODE BEGIN 2 */
-  printf("Hello from STM32F429!\r\n");
-  printf("\r\n=== Flash Erase and Write Test ===\r\n\r\n");
+  printf("\r\n");
+  printf("========================================\r\n");
+  printf("    BOOTLOADER v1.0                    \r\n");
+  printf("========================================\r\n");
+  printf("Running at address: 0x%08lX\r\n", (uint32_t)&main);
+  printf("\r\n");
 
-  // First, read before erase
-  uint32_t test_address = 0x080E0000;
-  printf("BEFORE erase - Reading from 0x080E0000:\r\n");
-  for (int i = 0; i < 4; i++)
+  // Blink LED a few times to show bootloader is running
+  printf("Bootloader running... (LED blinks 3 times)\r\n");
+  for (int i = 0; i < 3; i++)
   {
-      uint32_t value = *((uint32_t *)(test_address + i * 4));
-      printf("  0x%08lX: 0x%08lX\r\n", test_address + i * 4, value);
+	HAL_GPIO_WritePin(GPIOG, GPIO_PIN_13, GPIO_PIN_SET);
+	HAL_Delay(200);
+	HAL_GPIO_WritePin(GPIOG, GPIO_PIN_13, GPIO_PIN_RESET);
+	HAL_Delay(200);
   }
 
-  // Now erase Sector 11
-  printf("\r\nErasing Sector 11...\r\n");
+  printf("\r\n");
+  printf("Attempting to jump to application...\r\n");
+  HAL_Delay(500);  // Brief pause
 
-  // 1. Unlock flash
-  HAL_FLASH_Unlock();
+  // Jump to application!
+  jump_to_application(0x08010000);
 
-  // 2. Setup erase
-  FLASH_EraseInitTypeDef EraseInitStruct;
-  EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
-  EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;  // 2.7V to 3.6V
-  EraseInitStruct.Sector = FLASH_SECTOR_11;
-  EraseInitStruct.NbSectors = 1;
+  // If we reach here, jump failed
+  printf("\r\n");
+  printf("ERROR: Failed to jump to application!\r\n");
+  printf("Staying in bootloader mode.\r\n");
 
-  uint32_t SectorError = 0;
-
-  // 3. Perform erase
-  if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) == HAL_OK)
-  {
-      printf("  Erase OK\r\n");
-  }
-
-  // 4. Write test data
-  printf("\r\nStep 2: Writing test pattern...\r\n");
-
-  uint32_t test_data[] = {
-      0xDEADBEEF,
-      0xCAFEBABE,
-      0x12345678,
-      0xAABBCCDD
-  };
-
-  for (int i = 0; i < 4; i++)
-  {
-//      uint32_t write_address = test_address + (i * 4);
-      // What happens if tried to write to the same address twice?
-      uint32_t write_address = test_address;
-
-      // Write 32-bit word
-      HAL_StatusTypeDef status = HAL_FLASH_Program(
-          FLASH_TYPEPROGRAM_WORD,
-          write_address,
-          test_data[i]
-      );
-
-      if (status == HAL_OK)
-      {
-          printf("  Written 0x%08lX to address 0x%08lX\r\n",
-                 test_data[i], write_address);
-      }
-      else
-      {
-          printf("  WRITE FAILED at 0x%08lX!\r\n", write_address);
-      }
-  }
-
-  // 5. Lock flash
-  HAL_FLASH_Lock();
-
-  // 6. Read back and verify
-  printf("\r\nStep 3: Reading back and verifying...\r\n");
-
-  bool all_correct = true;
-
-  for (int i = 0; i < 4; i++)
-  {
-      uint32_t read_address = test_address + (i * 4);
-      uint32_t read_value = *((uint32_t *)read_address);
-
-      printf("  Address 0x%08lX: Read 0x%08lX, Expected 0x%08lX ",
-             read_address, read_value, test_data[i]);
-
-      if (read_value == test_data[i])
-      {
-          printf("[OK]\r\n");
-      }
-      else
-      {
-          printf("[MISMATCH!]\r\n");
-          all_correct = false;
-      }
-  }
-
-  if (all_correct)
-  {
-      printf("\r\n✓ All writes verified successfully!\r\n");
-  }
-  else
-  {
-      printf("\r\n✗ Verification failed!\r\n");
-  }
-
-  printf("\r\n=== Flash Write Test Complete ===\r\n");
-
-  /* USER CODE END 2 */
-
-//  sprintf(msg, "Counter: %d\r\n", counter);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-//  while (1)
-//  {
+  while (1)
+  {
     /* USER CODE END WHILE */
-//    MX_USB_HOST_Process();
-//
-//    printf("Counter: %d\r\n", counter++);
-//    HAL_Delay(1000);
+    MX_USB_HOST_Process();
 
     /* USER CODE BEGIN 3 */
-//  }
+
+	  // Slow blink indicates bootloader fallback mode
+	  HAL_GPIO_TogglePin(GPIOG, GPIO_PIN_13);
+	  HAL_Delay(500);
+  }
+  /* USER CODE BEGIN WHILE */
+
   /* USER CODE END 3 */
 }
 
@@ -299,7 +280,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 4;
+  RCC_OscInitStruct.PLL.PLLM = 8;
   RCC_OscInitStruct.PLL.PLLN = 72;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 3;
@@ -312,12 +293,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
