@@ -1,5 +1,6 @@
 .settings
-Core/Startup
+# startup_stm32f429zitx.s
+**/Startup
 Debug
 Drivers
 Middlewares

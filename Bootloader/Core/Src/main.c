@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_host.h"
+#include "boot_state.h"
 #include <stdio.h>
 
 /* Private includes ----------------------------------------------------------*/
@@ -207,8 +208,8 @@ int main(void)
   MX_TIM1_Init();
   MX_USART1_UART_Init();
   MX_USB_HOST_Init();
+
   /* USER CODE BEGIN 2 */
-  printf("\r\n");
   printf("========================================\r\n");
   printf("    BOOTLOADER v1.0                    \r\n");
   printf("========================================\r\n");
@@ -224,6 +225,80 @@ int main(void)
 	HAL_GPIO_WritePin(GPIOG, GPIO_PIN_13, GPIO_PIN_RESET);
 	HAL_Delay(200);
   }
+
+  printf("\r\n========================================\r\n");
+  printf("    BOOTLOADER BOOT STATE TEST\r\n");
+  printf("========================================\r\n");
+
+  // Test 1: Read boot state (should be invalid on first run)
+  printf("\n--- Test 1: Reading boot state ---\r\n");
+  boot_state_t state;
+  int result = boot_state_read(&state);
+
+  if (result == -1) {
+	  printf("Boot state: Invalid/Erased (expected on first run)\r\n");
+  } else if (result == -2) {
+	  printf("Boot state: CRC mismatch - CORRUPTED!\r\n");
+  } else {
+	  printf("Boot state: Valid\r\n");
+	  printf("  Magic: 0x%08lX\r\n", state.magic_number);
+	  printf("  Active Bank: %08lX\r\n", state.active_bank);
+	  printf("  Bank A Status: %08lX\r\n", state.bank_a_status);
+	  printf("  Bank B Status: %08lX\r\n", state.bank_b_status);
+  }
+
+  // Test 2: Write a new boot state
+  printf("\n--- Test 2: Writing new boot state ---\r\n");
+  boot_state_t new_state = {
+	  .magic_number = BOOT_STATE_MAGIC,
+	  .bank_a_status = BANK_STATUS_VALID,
+	  .bank_b_status = BANK_STATUS_INVALID,
+	  .active_bank = BANK_A,
+	  .crc32 = 0  // Will be calculated
+  };
+
+  printf("Erasing boot state sector...\r\n");
+  if (boot_state_erase() != 0) {
+	  printf("ERROR: Erase failed!\r\n");
+	  while(1);
+  }
+  printf("Erase successful!\r\n");
+
+  printf("Writing boot state...\r\n");
+  if (boot_state_write(&new_state) != 0) {
+	  printf("ERROR: Write failed!\r\n");
+	  while(1);
+  }
+  printf("Write successful!\r\n");
+
+  // Test 3: Read it back
+  printf("\n--- Test 3: Reading back ---\r\n");
+  result = boot_state_read(&state);
+
+  if (result == 0) {
+	  printf("Boot state: Valid!\r\n");
+	  printf("  Magic: 0x%08lX\r\n", state.magic_number);
+	  printf("  Active Bank: %08lX\r\n", state.active_bank);
+	  printf("  Bank A Status: %08lX\r\n", state.bank_a_status);
+	  printf("  Bank B Status: %08lX\r\n", state.bank_b_status);
+	  printf("  CRC32: 0x%08lX\r\n", state.crc32);
+  } else {
+	  printf("ERROR: Read failed with code %d\r\n", result);
+  }
+
+  // Test 4: Get bank address
+  printf("\n--- Test 4: Bank addresses ---\r\n");
+  uint32_t addr_a = boot_state_get_bank_address(BANK_A);
+  uint32_t addr_b = boot_state_get_bank_address(BANK_B);
+  uint32_t addr_invalid = boot_state_get_bank_address(BANK_INVALID);
+
+  printf("Bank A address: 0x%08lX\r\n", addr_a);
+  printf("Bank B address: 0x%08lX\r\n", addr_b);
+  printf("Invalid bank address: 0x%08lX\r\n", addr_invalid);
+
+  printf("\n========================================\r\n");
+  printf("All tests complete!\r\n");
+  printf("========================================\r\n");
 
   printf("\r\n");
   printf("Attempting to jump to application...\r\n");
