@@ -231,29 +231,29 @@ int main(void)
   printf("========================================\r\n");
 
   // Test 1: Read boot state (should be invalid on first run)
-  printf("\n--- Test 1: Reading boot state ---\r\n");
-  boot_state_t state;
-  int result = boot_state_read(&state);
-
-  if (result == -1) {
-	  printf("Boot state: Invalid/Erased (expected on first run)\r\n");
-  } else if (result == -2) {
-	  printf("Boot state: CRC mismatch - CORRUPTED!\r\n");
-  } else {
-	  printf("Boot state: Valid\r\n");
-	  printf("  Magic: 0x%08lX\r\n", state.magic_number);
-	  printf("  Active Bank: %08lX\r\n", state.active_bank);
-	  printf("  Bank A Status: %08lX\r\n", state.bank_a_status);
-	  printf("  Bank B Status: %08lX\r\n", state.bank_b_status);
-  }
+//  printf("\n--- Test 1: Reading boot state ---\r\n");
+//  boot_state_t state;
+//  int result = boot_state_read(&state);
+//
+//  if (result == -1) {
+//	  printf("Boot state: Invalid/Erased (expected on first run)\r\n");
+//  } else if (result == -2) {
+//	  printf("Boot state: CRC mismatch - CORRUPTED!\r\n");
+//  } else {
+//	  printf("Boot state: Valid\r\n");
+//	  printf("  Magic: 0x%08lX\r\n", state.magic_number);
+//	  printf("  Active Bank: %08lX\r\n", state.active_bank);
+//	  printf("  Bank A Status: %08lX\r\n", state.bank_a_status);
+//	  printf("  Bank B Status: %08lX\r\n", state.bank_b_status);
+//  }
 
   // Test 2: Write a new boot state
   printf("\n--- Test 2: Writing new boot state ---\r\n");
   boot_state_t new_state = {
 	  .magic_number = BOOT_STATE_MAGIC,
 	  .bank_a_status = BANK_STATUS_VALID,
-	  .bank_b_status = BANK_STATUS_INVALID,
-	  .active_bank = BANK_A,
+	  .bank_b_status = BANK_STATUS_VALID,
+	  .active_bank = BANK_B,
 	  .crc32 = 0  // Will be calculated
   };
 
@@ -272,29 +272,59 @@ int main(void)
   printf("Write successful!\r\n");
 
   // Test 3: Read it back
-  printf("\n--- Test 3: Reading back ---\r\n");
-  result = boot_state_read(&state);
+  printf("\n--- Test 3: Reading boot state ---\r\n");
+  int result = boot_state_read(&new_state);
+  uint32_t boot_address = 0;
+  boot_state_t state = new_state;
 
   if (result == 0) {
-	  printf("Boot state: Valid!\r\n");
-	  printf("  Magic: 0x%08lX\r\n", state.magic_number);
-	  printf("  Active Bank: %08lX\r\n", state.active_bank);
-	  printf("  Bank A Status: %08lX\r\n", state.bank_a_status);
-	  printf("  Bank B Status: %08lX\r\n", state.bank_b_status);
-	  printf("  CRC32: 0x%08lX\r\n", state.crc32);
+	  // Valid boot state found
+	  printf("Boot state valid!\r\n");
+	  printf("  Active bank: %s\r\n",
+			 state.active_bank == BANK_A ? "Bank A" : "Bank B");
+	  printf("  Bank A status: %s\r\n",
+			 state.bank_a_status == BANK_STATUS_VALID ? "VALID" : "INVALID");
+	  printf("  Bank B status: %s\r\n",
+			 state.bank_b_status == BANK_STATUS_VALID ? "VALID" : "INVALID");
+
+	  // Check if selected bank is valid
+	  if (state.active_bank == BANK_A &&
+		  state.bank_a_status == BANK_STATUS_VALID) {
+		  boot_address = BANK_A_ADDRESS;
+		  printf("Booting from Bank A\r\n");
+	  }
+	  else if (state.active_bank == BANK_B &&
+			   state.bank_b_status == BANK_STATUS_VALID) {
+		  boot_address = BANK_B_ADDRESS;
+		  printf("Booting from Bank B\r\n");
+	  }
+	  else {
+		  printf("Selected bank is invalid! Trying fallback...\r\n");
+	  }
   } else {
 	  printf("ERROR: Read failed with code %d\r\n", result);
   }
 
-  // Test 4: Get bank address
-  printf("\n--- Test 4: Bank addresses ---\r\n");
-  uint32_t addr_a = boot_state_get_bank_address(BANK_A);
-  uint32_t addr_b = boot_state_get_bank_address(BANK_B);
-  uint32_t addr_invalid = boot_state_get_bank_address(BANK_INVALID);
+  // Fallback logic if no valid bank selected yet
+  if (boot_address == 0) {
+	  printf("Attempting fallback boot sequence:\r\n");
 
-  printf("Bank A address: 0x%08lX\r\n", addr_a);
-  printf("Bank B address: 0x%08lX\r\n", addr_b);
-  printf("Invalid bank address: 0x%08lX\r\n", addr_invalid);
+	  // Try Bank A first
+	  if (result == 0 && state.bank_a_status == BANK_STATUS_VALID) {
+		  boot_address = BANK_A_ADDRESS;
+		  printf("  Trying Bank A (fallback)\r\n");
+	  }
+	  // Then try Bank B
+	  else if (result == 0 && state.bank_b_status == BANK_STATUS_VALID) {
+		  boot_address = BANK_B_ADDRESS;
+		  printf("  Trying Bank B (fallback)\r\n");
+	  }
+	  // Default to Bank A even if state is invalid
+	  else {
+		  boot_address = BANK_A_ADDRESS;
+		  printf("  Defaulting to Bank A\r\n");
+	  }
+  }
 
   printf("\n========================================\r\n");
   printf("All tests complete!\r\n");
@@ -305,7 +335,7 @@ int main(void)
   HAL_Delay(500);  // Brief pause
 
   // Jump to application!
-  jump_to_application(0x08010000);
+  jump_to_application(boot_address);
 
   // If we reach here, jump failed
   printf("\r\n");

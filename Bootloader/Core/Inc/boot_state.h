@@ -11,14 +11,15 @@
 #include <stdint.h>
 
 // Flash addresses
-#define BOOT_STATE_ADDRESS  0x08090000
-#define BANK_A_ADDRESS      0x08010000
-#define BANK_B_ADDRESS      0x08050000
+#define BANK_A_ADDRESS      0x08010000  // Sector 4-5 (192KB)
+#define BANK_B_ADDRESS      0x08040000  // Sector 6-7 (256KB)
+#define BOOT_STATE_ADDRESS  0x08080000  // Sector 8
 
 // Bank selection (now uint32_t for word alignment)
 #define BANK_A              0x00000000
 #define BANK_B              0x00000001
 #define BANK_INVALID        0xFFFFFFFF
+#define BANK_SIZE  (256 * 1024)  // 256KB
 
 // Bank status values (now uint32_t for word alignment)
 #define BANK_STATUS_INVALID 0x00000000
@@ -38,7 +39,7 @@ typedef struct {
 
 // Function prototypes
 int boot_state_read(boot_state_t *state);
-int boot_state_write(const boot_state_t *state);
+static int write_to_flash_unified(uint32_t address, const void *data, uint16_t size);
 int boot_state_erase(void);
 uint32_t boot_state_get_bank_address(uint32_t bank);
 

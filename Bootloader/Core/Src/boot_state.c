@@ -64,33 +64,12 @@ int boot_state_write(const boot_state_t *state) {
     printf("  magic_number: 0x%08lX\r\n", state_copy.magic_number);
     printf("  bank_a_status: 0x%08lX\r\n", state_copy.bank_a_status);
     printf("  bank_b_status: 0x%08lX\r\n", state_copy.bank_b_status);
-    printf("  active_bank: 0x%09lX\r\n", state_copy.active_bank);
+    printf("  active_bank: 0x%08lX\r\n", state_copy.active_bank);
     printf("  CRC32: 0x%08lX\r\n", state_copy.crc32);
 
-    // TODO: Write to flash
-    HAL_FLASH_Unlock();
-
-    // Write word by word
-	uint32_t *data = (uint32_t*)&state_copy;
-	uint32_t address = BOOT_STATE_ADDRESS;
-
-	for (int i = 0; i < sizeof(boot_state_t) / 4; i++) {
-		HAL_StatusTypeDef status = HAL_FLASH_Program(
-			FLASH_TYPEPROGRAM_WORD,
-			address,
-			data[i]
-		);
-
-		if (status != HAL_OK) {
-			HAL_FLASH_Lock();
-			return -1;  // Write failed
-		}
-
-		address += 4;  // Move to next word
-	}
-
-	// 4. Lock the Flash access
-	HAL_FLASH_Lock();
+    if (write_to_flash_unified(BOOT_STATE_ADDRESS, &state_copy, sizeof(boot_state_t)) != 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -111,7 +90,7 @@ int boot_state_erase(void) {
 
 	if (status != HAL_OK) {
 		HAL_FLASH_Lock();
-		return -1;  // Write failed
+		return -1;  // Erase failed
 	}
 	// 3. Lock flash
 	HAL_FLASH_Lock();
