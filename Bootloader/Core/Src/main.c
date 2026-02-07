@@ -18,9 +18,12 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "usb_host.h"
 #include "boot_state.h"
+#include "ota_manager.h"
+#include "ota_uart.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -44,20 +47,8 @@
 
 /* Private variables ---------------------------------------------------------*/
 CRC_HandleTypeDef hcrc;
-
-DMA2D_HandleTypeDef hdma2d;
-
-I2C_HandleTypeDef hi2c3;
-
-LTDC_HandleTypeDef hltdc;
-
-SPI_HandleTypeDef hspi5;
-
-TIM_HandleTypeDef htim1;
-
 UART_HandleTypeDef huart1;
-
-SDRAM_HandleTypeDef hsdram1;
+TIM_HandleTypeDef htim1;
 
 /* USER CODE BEGIN PV */
 
@@ -67,14 +58,8 @@ SDRAM_HandleTypeDef hsdram1;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_CRC_Init(void);
-static void MX_DMA2D_Init(void);
-static void MX_FMC_Init(void);
-static void MX_I2C3_Init(void);
-static void MX_LTDC_Init(void);
-static void MX_SPI5_Init(void);
-static void MX_TIM1_Init(void);
 static void MX_USART1_UART_Init(void);
-void MX_USB_HOST_Process(void);
+static void MX_TIM1_Init(void);
 
 /* USER CODE BEGIN PFP */
 
@@ -168,6 +153,158 @@ void jump_to_application(uint32_t app_address)
     // Should never reach here
     while (1);
 }
+
+/**
+ * @brief Simulate OTA update with fake firmware
+ */
+void test_ota_simulation(void) {
+    printf("\r\n");
+    printf("========================================\r\n");
+    printf("    OTA SIMULATION TEST\r\n");
+    printf("========================================\r\n");
+
+    // Step 1: Create fake firmware data
+    printf("\n--- Step 1: Creating fake firmware ---\r\n");
+
+    #define TEST_FIRMWARE_SIZE  (5 * 1024)  // 5KB test firmware
+    uint8_t *test_firmware = malloc(TEST_FIRMWARE_SIZE);
+
+    if (test_firmware == NULL) {
+        printf("ERROR: Failed to allocate memory for test firmware\r\n");
+        return;
+    }
+
+    // Fill with recognizable pattern
+    for (int i = 0; i < TEST_FIRMWARE_SIZE; i++) {
+        test_firmware[i] = (uint8_t)(i & 0xFF);  // 0x00, 0x01, 0x02... 0xFF, 0x00...
+    }
+
+    printf("Test firmware created: %d bytes\r\n", TEST_FIRMWARE_SIZE);
+
+    // Calculate CRC32 of test firmware
+    uint32_t firmware_crc = calculate_crc32(test_firmware, TEST_FIRMWARE_SIZE);
+    printf("Test firmware CRC32: 0x%08lX\r\n", firmware_crc);
+
+    // Step 2: Initialize OTA context
+    printf("\n--- Step 2: Initializing OTA ---\r\n");
+    ota_context_t ota_ctx;
+    ota_init(&ota_ctx);
+    printf("OTA context initialized\r\n");
+
+    // Step 3: Send START packet
+    printf("\n--- Step 3: Sending START packet ---\r\n");
+
+    uint32_t total_chunks = (TEST_FIRMWARE_SIZE + OTA_CHUNK_SIZE - 1) / OTA_CHUNK_SIZE;
+
+    ota_start_packet_t start_pkt = {
+        .magic = OTA_MAGIC_START,
+        .packet_type = OTA_PKT_START,
+        .firmware_size = TEST_FIRMWARE_SIZE,
+        .firmware_version = 0x02000100,  // Version 2.0.1 (Major.Minor.Patch)
+        .firmware_crc32 = firmware_crc,
+        .total_chunks = total_chunks,
+        .target_bank = BANK_B  // We're running from Bank A, update Bank B
+    };
+
+    ota_process_start_packet(&ota_ctx, &start_pkt);
+
+    if (ota_ctx.state != OTA_STATE_RECEIVING_DATA) {
+        printf("ERROR: START packet failed! State: %d\r\n", ota_ctx.state);
+        free(test_firmware);
+        return;
+    }
+
+    printf("START packet accepted. Ready to receive %lu chunks\r\n", total_chunks);
+
+    // Step 4: Send DATA packets
+    printf("\n--- Step 4: Sending DATA packets ---\r\n");
+
+    for (uint32_t chunk_num = 0; chunk_num < total_chunks; chunk_num++) {
+        ota_data_packet_t data_pkt;
+
+        data_pkt.magic = OTA_MAGIC_DATA;
+        data_pkt.packet_type = OTA_PKT_DATA;
+        data_pkt.chunk_number = chunk_num;
+
+        // Calculate chunk size (last chunk might be smaller)
+        uint32_t offset = chunk_num * OTA_CHUNK_SIZE;
+        uint32_t remaining = TEST_FIRMWARE_SIZE - offset;
+        data_pkt.chunk_size = (remaining > OTA_CHUNK_SIZE) ? OTA_CHUNK_SIZE : remaining;
+
+        // Copy chunk data
+        memcpy(data_pkt.data, test_firmware + offset, data_pkt.chunk_size);
+
+        // Calculate chunk CRC
+        data_pkt.chunk_crc32 = calculate_crc32(data_pkt.data, data_pkt.chunk_size);
+
+        // Process the packet
+        ota_process_data_packet(&ota_ctx, &data_pkt);
+
+        if (ota_ctx.state == OTA_STATE_ERROR) {
+            printf("ERROR: DATA packet %lu failed!\r\n", chunk_num);
+            free(test_firmware);
+            return;
+        }
+
+        // Print progress every 10 chunks
+        if ((chunk_num + 1) % 10 == 0 || chunk_num == total_chunks - 1) {
+            printf("Progress: %lu/%lu chunks (%lu%%)\r\n",
+                   chunk_num + 1,
+                   total_chunks,
+                   ((chunk_num + 1) * 100) / total_chunks);
+        }
+    }
+
+    if (ota_ctx.state != OTA_STATE_VERIFYING) {
+        printf("ERROR: Not in VERIFYING state after all chunks! State: %d\r\n", ota_ctx.state);
+        free(test_firmware);
+        return;
+    }
+
+    printf("All DATA packets sent successfully!\r\n");
+
+    // Step 5: Send END packet
+    printf("\n--- Step 5: Sending END packet ---\r\n");
+
+    ota_end_packet_t end_pkt = {
+        .magic = OTA_MAGIC_START,
+        .packet_type = OTA_PKT_END
+    };
+
+    ota_process_end_packet(&ota_ctx, &end_pkt);
+
+    if (ota_ctx.state != OTA_STATE_COMPLETE) {
+        printf("ERROR: END packet failed! State: %d\r\n", ota_ctx.state);
+        free(test_firmware);
+        return;
+    }
+
+    printf("END packet processed successfully!\r\n");
+
+    // Step 6: Verify boot state was updated
+    printf("\n--- Step 6: Verifying boot state ---\r\n");
+
+    boot_state_t state;
+    if (boot_state_read(&state) == 0) {
+        printf("Boot state updated:\r\n");
+        printf("  Active bank: %s\r\n", state.active_bank == BANK_A ? "Bank A" : "Bank B");
+        printf("  Bank A status: %s\r\n", state.bank_a_status == BANK_STATUS_VALID ? "VALID" : "INVALID");
+        printf("  Bank B status: %s\r\n", state.bank_b_status == BANK_STATUS_VALID ? "VALID" : "INVALID");
+    } else {
+        printf("ERROR: Failed to read boot state\r\n");
+    }
+
+    // Cleanup
+    free(test_firmware);
+
+    printf("\r\n========================================\r\n");
+    printf("✓ OTA SIMULATION TEST COMPLETE!\r\n");
+    printf("========================================\r\n");
+    printf("\nNext steps:\r\n");
+    printf("1. Reset the device\r\n");
+    printf("2. Bootloader should boot from Bank B\r\n");
+    printf("3. Verify new firmware is running\r\n");
+}
 /* USER CODE END 0 */
 
 /**
@@ -200,14 +337,8 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_CRC_Init();
-  MX_DMA2D_Init();
-  MX_FMC_Init();
-  MX_I2C3_Init();
-  MX_LTDC_Init();
-  MX_SPI5_Init();
   MX_TIM1_Init();
   MX_USART1_UART_Init();
-  MX_USB_HOST_Init();
 
   /* USER CODE BEGIN 2 */
   printf("========================================\r\n");
@@ -226,140 +357,31 @@ int main(void)
 	HAL_Delay(200);
   }
 
-  printf("\r\n========================================\r\n");
-  printf("    BOOTLOADER BOOT STATE TEST\r\n");
-  printf("========================================\r\n");
+  // Note: We're running from bootloader (0x08000000), not from Bank A or B
+  // The OTA simulation will assume we're running from Bank A for testing purposes
+  printf("Note: Running OTA simulation (pretending to run from Bank A)\r\n");
 
-  // Test 1: Read boot state (should be invalid on first run)
-//  printf("\n--- Test 1: Reading boot state ---\r\n");
-//  boot_state_t state;
-//  int result = boot_state_read(&state);
-//
-//  if (result == -1) {
-//	  printf("Boot state: Invalid/Erased (expected on first run)\r\n");
-//  } else if (result == -2) {
-//	  printf("Boot state: CRC mismatch - CORRUPTED!\r\n");
-//  } else {
-//	  printf("Boot state: Valid\r\n");
-//	  printf("  Magic: 0x%08lX\r\n", state.magic_number);
-//	  printf("  Active Bank: %08lX\r\n", state.active_bank);
-//	  printf("  Bank A Status: %08lX\r\n", state.bank_a_status);
-//	  printf("  Bank B Status: %08lX\r\n", state.bank_b_status);
-//  }
+  // Run OTA simulation test
+  test_ota_simulation();
 
-  // Test 2: Write a new boot state
-  printf("\n--- Test 2: Writing new boot state ---\r\n");
-  boot_state_t new_state = {
-	  .magic_number = BOOT_STATE_MAGIC,
-	  .bank_a_status = BANK_STATUS_VALID,
-	  .bank_b_status = BANK_STATUS_VALID,
-	  .active_bank = BANK_B,
-	  .crc32 = 0  // Will be calculated
-  };
+  printf("Running from: 0x%08lX\r\n", SCB->VTOR);
+  printf("Current bank: %s\r\n",
+		 (SCB->VTOR == 0x08010000) ? "Bank A" : "Bank B");
+  // Initialize OTA context
+  ota_context_t ota_ctx;
+  ota_init(&ota_ctx);
 
-  printf("Erasing boot state sector...\r\n");
-  if (boot_state_erase() != 0) {
-	  printf("ERROR: Erase failed!\r\n");
-	  while(1);
-  }
-  printf("Erase successful!\r\n");
+  // Enter OTA receive mode
+  printf("\r\nEntering OTA mode...\r\n");
+  ota_uart_receive_loop(&ota_ctx);
 
-  printf("Writing boot state...\r\n");
-  if (boot_state_write(&new_state) != 0) {
-	  printf("ERROR: Write failed!\r\n");
-	  while(1);
-  }
-  printf("Write successful!\r\n");
+  // If we return from OTA (successful or aborted), just blink LED
+  printf("\r\nOTA complete. Blinking LED...\r\n");
 
-  // Test 3: Read it back
-  printf("\n--- Test 3: Reading boot state ---\r\n");
-  int result = boot_state_read(&new_state);
-  uint32_t boot_address = 0;
-  boot_state_t state = new_state;
-
-  if (result == 0) {
-	  // Valid boot state found
-	  printf("Boot state valid!\r\n");
-	  printf("  Active bank: %s\r\n",
-			 state.active_bank == BANK_A ? "Bank A" : "Bank B");
-	  printf("  Bank A status: %s\r\n",
-			 state.bank_a_status == BANK_STATUS_VALID ? "VALID" : "INVALID");
-	  printf("  Bank B status: %s\r\n",
-			 state.bank_b_status == BANK_STATUS_VALID ? "VALID" : "INVALID");
-
-	  // Check if selected bank is valid
-	  if (state.active_bank == BANK_A &&
-		  state.bank_a_status == BANK_STATUS_VALID) {
-		  boot_address = BANK_A_ADDRESS;
-		  printf("Booting from Bank A\r\n");
-	  }
-	  else if (state.active_bank == BANK_B &&
-			   state.bank_b_status == BANK_STATUS_VALID) {
-		  boot_address = BANK_B_ADDRESS;
-		  printf("Booting from Bank B\r\n");
-	  }
-	  else {
-		  printf("Selected bank is invalid! Trying fallback...\r\n");
-	  }
-  } else {
-	  printf("ERROR: Read failed with code %d\r\n", result);
-  }
-
-  // Fallback logic if no valid bank selected yet
-  if (boot_address == 0) {
-	  printf("Attempting fallback boot sequence:\r\n");
-
-	  // Try Bank A first
-	  if (result == 0 && state.bank_a_status == BANK_STATUS_VALID) {
-		  boot_address = BANK_A_ADDRESS;
-		  printf("  Trying Bank A (fallback)\r\n");
-	  }
-	  // Then try Bank B
-	  else if (result == 0 && state.bank_b_status == BANK_STATUS_VALID) {
-		  boot_address = BANK_B_ADDRESS;
-		  printf("  Trying Bank B (fallback)\r\n");
-	  }
-	  // Default to Bank A even if state is invalid
-	  else {
-		  boot_address = BANK_A_ADDRESS;
-		  printf("  Defaulting to Bank A\r\n");
-	  }
-  }
-
-  printf("\n========================================\r\n");
-  printf("All tests complete!\r\n");
-  printf("========================================\r\n");
-
-  printf("\r\n");
-  printf("Attempting to jump to application...\r\n");
-  HAL_Delay(500);  // Brief pause
-
-  // Jump to application!
-  jump_to_application(boot_address);
-
-  // If we reach here, jump failed
-  printf("\r\n");
-  printf("ERROR: Failed to jump to application!\r\n");
-  printf("Staying in bootloader mode.\r\n");
-
-  /* USER CODE END 2 */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    /* USER CODE END WHILE */
-    // MX_USB_HOST_Process();
-
-    /* USER CODE BEGIN 3 */
-
-	  // Slow blink indicates bootloader fallback mode
+  while (1) {
 	  HAL_GPIO_TogglePin(GPIOG, GPIO_PIN_13);
-	  HAL_Delay(500);
+	  HAL_Delay(1000);
   }
-  /* USER CODE BEGIN WHILE */
-
-  /* USER CODE END 3 */
 }
 
 /**
@@ -435,187 +457,35 @@ static void MX_CRC_Init(void)
 }
 
 /**
-  * @brief DMA2D Initialization Function
+  * @brief USART1 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_DMA2D_Init(void)
+static void MX_USART1_UART_Init(void)
 {
 
-  /* USER CODE BEGIN DMA2D_Init 0 */
+  /* USER CODE BEGIN USART1_Init 0 */
 
-  /* USER CODE END DMA2D_Init 0 */
+  /* USER CODE END USART1_Init 0 */
 
-  /* USER CODE BEGIN DMA2D_Init 1 */
+  /* USER CODE BEGIN USART1_Init 1 */
 
-  /* USER CODE END DMA2D_Init 1 */
-  hdma2d.Instance = DMA2D;
-  hdma2d.Init.Mode = DMA2D_M2M;
-  hdma2d.Init.ColorMode = DMA2D_OUTPUT_ARGB8888;
-  hdma2d.Init.OutputOffset = 0;
-  hdma2d.LayerCfg[1].InputOffset = 0;
-  hdma2d.LayerCfg[1].InputColorMode = DMA2D_INPUT_ARGB8888;
-  hdma2d.LayerCfg[1].AlphaMode = DMA2D_NO_MODIF_ALPHA;
-  hdma2d.LayerCfg[1].InputAlpha = 0;
-  if (HAL_DMA2D_Init(&hdma2d) != HAL_OK)
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
   {
     Error_Handler();
   }
-  if (HAL_DMA2D_ConfigLayer(&hdma2d, 1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN DMA2D_Init 2 */
+  /* USER CODE BEGIN USART1_Init 2 */
 
-  /* USER CODE END DMA2D_Init 2 */
-
-}
-
-/**
-  * @brief I2C3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C3_Init(void)
-{
-
-  /* USER CODE BEGIN I2C3_Init 0 */
-
-  /* USER CODE END I2C3_Init 0 */
-
-  /* USER CODE BEGIN I2C3_Init 1 */
-
-  /* USER CODE END I2C3_Init 1 */
-  hi2c3.Instance = I2C3;
-  hi2c3.Init.ClockSpeed = 100000;
-  hi2c3.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c3.Init.OwnAddress1 = 0;
-  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c3.Init.OwnAddress2 = 0;
-  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Analogue filter
-  */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Digital filter
-  */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C3_Init 2 */
-
-  /* USER CODE END I2C3_Init 2 */
-
-}
-
-/**
-  * @brief LTDC Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_LTDC_Init(void)
-{
-
-  /* USER CODE BEGIN LTDC_Init 0 */
-
-  /* USER CODE END LTDC_Init 0 */
-
-  LTDC_LayerCfgTypeDef pLayerCfg = {0};
-
-  /* USER CODE BEGIN LTDC_Init 1 */
-
-  /* USER CODE END LTDC_Init 1 */
-  hltdc.Instance = LTDC;
-  hltdc.Init.HSPolarity = LTDC_HSPOLARITY_AL;
-  hltdc.Init.VSPolarity = LTDC_VSPOLARITY_AL;
-  hltdc.Init.DEPolarity = LTDC_DEPOLARITY_AL;
-  hltdc.Init.PCPolarity = LTDC_PCPOLARITY_IPC;
-  hltdc.Init.HorizontalSync = 9;
-  hltdc.Init.VerticalSync = 1;
-  hltdc.Init.AccumulatedHBP = 29;
-  hltdc.Init.AccumulatedVBP = 3;
-  hltdc.Init.AccumulatedActiveW = 269;
-  hltdc.Init.AccumulatedActiveH = 323;
-  hltdc.Init.TotalWidth = 279;
-  hltdc.Init.TotalHeigh = 327;
-  hltdc.Init.Backcolor.Blue = 0;
-  hltdc.Init.Backcolor.Green = 0;
-  hltdc.Init.Backcolor.Red = 0;
-  if (HAL_LTDC_Init(&hltdc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  pLayerCfg.WindowX0 = 0;
-  pLayerCfg.WindowX1 = 240;
-  pLayerCfg.WindowY0 = 0;
-  pLayerCfg.WindowY1 = 320;
-  pLayerCfg.PixelFormat = LTDC_PIXEL_FORMAT_RGB565;
-  pLayerCfg.Alpha = 255;
-  pLayerCfg.Alpha0 = 0;
-  pLayerCfg.BlendingFactor1 = LTDC_BLENDING_FACTOR1_PAxCA;
-  pLayerCfg.BlendingFactor2 = LTDC_BLENDING_FACTOR2_PAxCA;
-  pLayerCfg.FBStartAdress = 0xD0000000;
-  pLayerCfg.ImageWidth = 240;
-  pLayerCfg.ImageHeight = 320;
-  pLayerCfg.Backcolor.Blue = 0;
-  pLayerCfg.Backcolor.Green = 0;
-  pLayerCfg.Backcolor.Red = 0;
-  if (HAL_LTDC_ConfigLayer(&hltdc, &pLayerCfg, 0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN LTDC_Init 2 */
-
-  /* USER CODE END LTDC_Init 2 */
-
-}
-
-/**
-  * @brief SPI5 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI5_Init(void)
-{
-
-  /* USER CODE BEGIN SPI5_Init 0 */
-
-  /* USER CODE END SPI5_Init 0 */
-
-  /* USER CODE BEGIN SPI5_Init 1 */
-
-  /* USER CODE END SPI5_Init 1 */
-  /* SPI5 parameter configuration*/
-  hspi5.Instance = SPI5;
-  hspi5.Init.Mode = SPI_MODE_MASTER;
-  hspi5.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi5.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi5.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi5.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi5.Init.NSS = SPI_NSS_SOFT;
-  hspi5.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
-  hspi5.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi5.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi5.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi5.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi5) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI5_Init 2 */
-
-  /* USER CODE END SPI5_Init 2 */
+  /* USER CODE END USART1_Init 2 */
 
 }
 
@@ -663,86 +533,6 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 2 */
 
-}
-
-/**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/* FMC initialization function */
-static void MX_FMC_Init(void)
-{
-
-  /* USER CODE BEGIN FMC_Init 0 */
-
-  /* USER CODE END FMC_Init 0 */
-
-  FMC_SDRAM_TimingTypeDef SdramTiming = {0};
-
-  /* USER CODE BEGIN FMC_Init 1 */
-
-  /* USER CODE END FMC_Init 1 */
-
-  /** Perform the SDRAM1 memory initialization sequence
-  */
-  hsdram1.Instance = FMC_SDRAM_DEVICE;
-  /* hsdram1.Init */
-  hsdram1.Init.SDBank = FMC_SDRAM_BANK2;
-  hsdram1.Init.ColumnBitsNumber = FMC_SDRAM_COLUMN_BITS_NUM_8;
-  hsdram1.Init.RowBitsNumber = FMC_SDRAM_ROW_BITS_NUM_12;
-  hsdram1.Init.MemoryDataWidth = FMC_SDRAM_MEM_BUS_WIDTH_16;
-  hsdram1.Init.InternalBankNumber = FMC_SDRAM_INTERN_BANKS_NUM_4;
-  hsdram1.Init.CASLatency = FMC_SDRAM_CAS_LATENCY_3;
-  hsdram1.Init.WriteProtection = FMC_SDRAM_WRITE_PROTECTION_DISABLE;
-  hsdram1.Init.SDClockPeriod = FMC_SDRAM_CLOCK_PERIOD_2;
-  hsdram1.Init.ReadBurst = FMC_SDRAM_RBURST_DISABLE;
-  hsdram1.Init.ReadPipeDelay = FMC_SDRAM_RPIPE_DELAY_1;
-  /* SdramTiming */
-  SdramTiming.LoadToActiveDelay = 2;
-  SdramTiming.ExitSelfRefreshDelay = 7;
-  SdramTiming.SelfRefreshTime = 4;
-  SdramTiming.RowCycleDelay = 7;
-  SdramTiming.WriteRecoveryTime = 3;
-  SdramTiming.RPDelay = 2;
-  SdramTiming.RCDDelay = 2;
-
-  if (HAL_SDRAM_Init(&hsdram1, &SdramTiming) != HAL_OK)
-  {
-    Error_Handler( );
-  }
-
-  /* USER CODE BEGIN FMC_Init 2 */
-
-  /* USER CODE END FMC_Init 2 */
 }
 
 /**

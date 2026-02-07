@@ -11,9 +11,10 @@
 
 extern CRC_HandleTypeDef hcrc;
 
-// TODO: You'll need to implement or include CRC32 calculation
-// For now, we'll use a placeholder
-uint32_t calculate_crc32(const void *data, size_t length) {
+// Forward declaration
+static int write_to_flash_unified(uint32_t address, const void *data, uint16_t size);
+
+static uint32_t calculate_crc32(const void *data, size_t length) {
 	// Reset CRC peripheral
 	__HAL_CRC_DR_RESET(&hcrc);
 
@@ -114,4 +115,34 @@ uint32_t boot_state_get_bank_address(uint32_t bank) {
     return bank_address;
 }
 
+static int write_to_flash_unified(uint32_t address, const void *data, uint16_t size) {
+    HAL_FLASH_Unlock();
+
+    const uint32_t *words = (const uint32_t*)data;
+    uint16_t num_full_words = size / 4;
+
+    // Write full words
+    for (int i = 0; i < num_full_words; i++) {
+        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, address, words[i]) != HAL_OK) {
+            HAL_FLASH_Lock();
+            return -1;
+        }
+        address += 4;
+    }
+
+    // Handle remaining bytes (if any)
+    uint16_t remaining = size % 4;
+    if (remaining > 0) {
+        uint32_t last_word = 0xFFFFFFFF;
+        memcpy(&last_word, (uint8_t*)data + num_full_words * 4, remaining);
+
+        if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, address, last_word) != HAL_OK) {
+            HAL_FLASH_Lock();
+            return -1;
+        }
+    }
+
+    HAL_FLASH_Lock();
+    return 0;
+}
 

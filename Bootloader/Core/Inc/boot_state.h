@@ -39,7 +39,7 @@ typedef struct {
 
 // Function prototypes
 int boot_state_read(boot_state_t *state);
-static int write_to_flash_unified(uint32_t address, const void *data, uint16_t size);
+int boot_state_write(const boot_state_t *state);
 int boot_state_erase(void);
 uint32_t boot_state_get_bank_address(uint32_t bank);
 

@@ -24,7 +24,9 @@ void ota_init(ota_context_t *ctx) {
     ctx->error_code = OTA_ERR_NONE;
 }
 
-static uint32_t calculate_crc32(const void *data, size_t length) {
+extern CRC_HandleTypeDef hcrc;
+
+uint32_t calculate_crc32(const void *data, size_t length) {
     __HAL_CRC_DR_RESET(&hcrc);
 
     const uint32_t *words = (const uint32_t*)data;
@@ -60,6 +62,14 @@ static uint32_t ota_get_current_bank(void) {
         return BANK_B_ADDRESS;
     }
 
+    // Simulation mode: If running from bootloader (0x08000000 or 0x00000000),
+    // pretend we're running from Bank A for OTA testing
+    if (vtor == 0x08000000 || vtor == 0x00000000) {
+        printf("DEBUG: Running from bootloader (VTOR=0x%08lX), simulating Bank A\r\n", vtor);
+        return BANK_A_ADDRESS;
+    }
+
+    printf("WARNING: Unknown VTOR value: 0x%08lX\r\n", vtor);
     return 0;  // Unknown/invalid
 }
 
@@ -69,6 +79,7 @@ static uint32_t ota_get_current_bank(void) {
  */
 static uint32_t ota_get_inactive_bank(void) {
     uint32_t current = ota_get_current_bank();
+    printf("current: 0x%08lX\n", current);
 
     if (current == BANK_A_ADDRESS) {
         return BANK_B_ADDRESS;
@@ -142,7 +153,7 @@ void ota_send_response(const ota_context_t *ctx, uint8_t packet_type) {
 }
 
 void ota_process_start_packet(ota_context_t *ctx, const ota_start_packet_t *pkt) {
-    printf("\r\n=== OTA START Packet Received ===\r\n");
+    printf("\r\n=== OTA START Packet   ===\r\n");
 
     // Check 1: Are we in IDLE state?
     if (ctx->state != OTA_STATE_IDLE) {
@@ -352,6 +363,95 @@ void ota_process_data_packet(ota_context_t *ctx, const ota_data_packet_t *pkt) {
     }
 }
 
+/**
+ * @brief Calculate CRC32 of firmware stored in flash
+ * @param address Starting address of firmware
+ * @param size Size of firmware in bytes
+ * @return CRC32 value
+ */
+uint32_t ota_calculate_firmware_crc32(uint32_t address, uint32_t size) {
+    __HAL_CRC_DR_RESET(&hcrc);
+
+    const uint32_t BUFFER_SIZE = 1024;  // 1KB buffer
+    uint32_t remaining = size;
+    uint32_t offset = 0;
+
+    while (remaining > 0) {
+        uint32_t chunk_size = (remaining > BUFFER_SIZE) ? BUFFER_SIZE : remaining;
+
+        // Read directly from flash (it's memory-mapped, so we can just read it)
+        const uint8_t *flash_data = (const uint8_t*)(address + offset);
+
+        // Calculate CRC for this chunk
+        uint32_t num_words = chunk_size / 4;
+        if (num_words > 0) {
+            if (offset == 0) {
+                // First chunk - use Calculate
+                HAL_CRC_Calculate(&hcrc, (uint32_t*)flash_data, num_words);
+            } else {
+                // Subsequent chunks - use Accumulate
+                HAL_CRC_Accumulate(&hcrc, (uint32_t*)flash_data, num_words);
+            }
+        }
+
+        // Handle remaining bytes in this chunk
+        uint32_t chunk_remaining = chunk_size % 4;
+        if (chunk_remaining > 0) {
+            uint32_t last_word = 0;
+            memcpy(&last_word, flash_data + (num_words * 4), chunk_remaining);
+            HAL_CRC_Accumulate(&hcrc, &last_word, 1);
+        }
+
+        offset += chunk_size;
+        remaining -= chunk_size;
+    }
+
+    return hcrc.Instance->DR;  // Read final CRC value
+}
+
+/**
+ * @brief Update boot state after successful OTA
+ * @param ctx OTA context
+ * @return 0 on success, -1 on failure
+ */
+int ota_update_boot_state(const ota_context_t *ctx) {
+    boot_state_t new_state;
+
+    // Determine which bank we just updated
+    uint32_t updated_bank;
+    if (ctx->target_bank_address == BANK_A_ADDRESS) {
+        updated_bank = BANK_A;
+    } else {
+        updated_bank = BANK_B;
+    }
+
+    // Create new boot state
+    new_state.magic_number = BOOT_STATE_MAGIC;
+    new_state.active_bank = updated_bank;  // Switch to new bank
+    new_state.crc32 = 0;  // Will be calculated by boot_state_write
+
+    // Mark updated bank as VALID
+    if (updated_bank == BANK_A) {
+        new_state.bank_a_status = BANK_STATUS_VALID;
+        new_state.bank_b_status = BANK_STATUS_INVALID;  // Old firmware
+    } else {
+        new_state.bank_a_status = BANK_STATUS_INVALID;  // Old firmware
+        new_state.bank_b_status = BANK_STATUS_VALID;
+    }
+
+    // Erase and write boot state
+    if (boot_state_erase() != 0) {
+        return -1;
+    }
+
+    if (boot_state_write(&new_state) != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+
 void ota_process_end_packet(ota_context_t *ctx, const ota_end_packet_t *pkt) {
     printf("\r\n=== OTA END Packet Received ===\r\n");
 
@@ -422,99 +522,15 @@ void ota_process_end_packet(ota_context_t *ctx, const ota_end_packet_t *pkt) {
 
     printf("✓ Boot state updated!\r\n");
     printf("✓ OTA update complete!\r\n");
-    printf("  New firmware version: %lu\r\n", ctx->firmware_version);
+    printf("  New firmware version: %lu.%lu.%lu (0x%08lX)\r\n",
+           (ctx->firmware_version >> 24) & 0xFF,  // Major
+           (ctx->firmware_version >> 16) & 0xFF,  // Minor
+           ctx->firmware_version & 0xFFFF,         // Patch
+           ctx->firmware_version);
     printf("  Installed at: 0x%08lX\r\n", ctx->target_bank_address);
 
     ctx->state = OTA_STATE_COMPLETE;
     ota_send_response(ctx, OTA_PKT_ACK);
 
     printf("\r\nReboot the device to run the new firmware.\r\n");
-}
-
-/**
- * @brief Calculate CRC32 of firmware stored in flash
- * @param address Starting address of firmware
- * @param size Size of firmware in bytes
- * @return CRC32 value
- */
-static uint32_t ota_calculate_firmware_crc32(uint32_t address, uint32_t size) {
-    __HAL_CRC_DR_RESET(&hcrc);
-
-    const uint32_t BUFFER_SIZE = 1024;  // 1KB buffer
-    uint32_t remaining = size;
-    uint32_t offset = 0;
-
-    while (remaining > 0) {
-        uint32_t chunk_size = (remaining > BUFFER_SIZE) ? BUFFER_SIZE : remaining;
-
-        // Read directly from flash (it's memory-mapped, so we can just read it)
-        const uint8_t *flash_data = (const uint8_t*)(address + offset);
-
-        // Calculate CRC for this chunk
-        uint32_t num_words = chunk_size / 4;
-        if (num_words > 0) {
-            if (offset == 0) {
-                // First chunk - use Calculate
-                HAL_CRC_Calculate(&hcrc, (uint32_t*)flash_data, num_words);
-            } else {
-                // Subsequent chunks - use Accumulate
-                HAL_CRC_Accumulate(&hcrc, (uint32_t*)flash_data, num_words);
-            }
-        }
-
-        // Handle remaining bytes in this chunk
-        uint32_t chunk_remaining = chunk_size % 4;
-        if (chunk_remaining > 0) {
-            uint32_t last_word = 0;
-            memcpy(&last_word, flash_data + (num_words * 4), chunk_remaining);
-            HAL_CRC_Accumulate(&hcrc, &last_word, 1);
-        }
-
-        offset += chunk_size;
-        remaining -= chunk_size;
-    }
-
-    return hcrc.Instance->DR;  // Read final CRC value
-}
-
-/**
- * @brief Update boot state after successful OTA
- * @param ctx OTA context
- * @return 0 on success, -1 on failure
- */
-static int ota_update_boot_state(const ota_context_t *ctx) {
-    boot_state_t new_state;
-
-    // Determine which bank we just updated
-    uint32_t updated_bank;
-    if (ctx->target_bank_address == BANK_A_ADDRESS) {
-        updated_bank = BANK_A;
-    } else {
-        updated_bank = BANK_B;
-    }
-
-    // Create new boot state
-    new_state.magic_number = BOOT_STATE_MAGIC;
-    new_state.active_bank = updated_bank;  // Switch to new bank
-    new_state.crc32 = 0;  // Will be calculated by boot_state_write
-
-    // Mark updated bank as VALID
-    if (updated_bank == BANK_A) {
-        new_state.bank_a_status = BANK_STATUS_VALID;
-        new_state.bank_b_status = BANK_STATUS_INVALID;  // Old firmware
-    } else {
-        new_state.bank_a_status = BANK_STATUS_INVALID;  // Old firmware
-        new_state.bank_b_status = BANK_STATUS_VALID;
-    }
-
-    // Erase and write boot state
-    if (boot_state_erase() != 0) {
-        return -1;
-    }
-
-    if (boot_state_write(&new_state) != 0) {
-        return -1;
-    }
-
-    return 0;
 }

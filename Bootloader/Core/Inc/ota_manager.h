@@ -10,6 +10,7 @@
 
 #include "ota_protocol.h"
 #include <stdint.h>
+#include <stddef.h>
 
 // OTA state machine states
 typedef enum {
@@ -38,14 +39,12 @@ typedef struct {
 
 // Public API
 void ota_init(ota_context_t *ctx);
-static uint32_t calculate_crc32(const void *data, size_t length);
+uint32_t calculate_crc32(const void *data, size_t length);
 void ota_process_start_packet(ota_context_t *ctx, const ota_start_packet_t *pkt);
 void ota_process_data_packet(ota_context_t *ctx, const ota_data_packet_t *pkt);
 void ota_process_end_packet(ota_context_t *ctx, const ota_end_packet_t *pkt);
 void ota_send_response(const ota_context_t *ctx, uint8_t packet_type);
 int ota_erase_bank(uint32_t bank_address);
-static int write_to_flash_unified(uint32_t address, const void *data, uint16_t size);
-static uint32_t ota_calculate_firmware_crc32(uint32_t address, uint32_t size);
-static int ota_update_boot_state(const ota_context_t *ctx);
+int ota_update_boot_state(const ota_context_t *ctx);
 
 #endif /* INC_OTA_MANAGER_H_ */
